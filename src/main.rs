@@ -1,6 +1,6 @@
 use std::{
     cmp::Ordering,
-    collections::{BTreeMap, BTreeSet},
+    collections::{btree_map::Entry, BTreeMap, BTreeSet},
     fmt::{Display, Formatter},
     fs::File,
     io::{BufRead, BufReader, BufWriter, Write},
@@ -15,6 +15,7 @@ use log::{debug, info, trace};
 use serde::{Deserialize, Serialize};
 use starknet::{
     core::{
+        codec::{Decode, Encode},
         types::{
             requests::{CallRequest, GetStorageAtRequest},
             BlockId, EventFilter, Felt, FunctionCall,
@@ -28,10 +29,11 @@ use starknet::{
     },
 };
 
-const MARKET_HALT_BLOCK: u64 = 1144392;
+mod merkle;
+use merkle::{MerkleTree, RecoveryClaim};
 
-// TODO: once ZToken is halted update this block
-const ZTOKEN_HALT_BLOCK: u64 = MARKET_HALT_BLOCK;
+const MARKET_HALT_BLOCK: u64 = 1144392;
+const ZTOKEN_HALT_BLOCK: u64 = 1178488;
 
 const MARKET_ADDRESS: Felt =
     felt!("0x04c0a5193d58f74fbace4b74dcf65481e734ed1714121bdc571da345540efa05");
@@ -44,6 +46,7 @@ const ETH: Asset = Asset {
     token_address: felt!("0x049d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7"),
     z_token_address: felt!("0x01b5bd713e72fdc5d63ffd83762f81297f6175a5e0a4771cdadbc1dd5fe72cb1"),
     z_token_deploy_block: 48669,
+    merge_into: None,
 };
 
 const USDC: Asset = Asset {
@@ -52,6 +55,7 @@ const USDC: Asset = Asset {
     token_address: felt!("0x053c91253bc9682c04929ca02ed00b3e423f6710d2ee7e0d5ebb06f3ecf368a8"),
     z_token_address: felt!("0x047ad51726d891f972e74e4ad858a261b43869f7126ce7436ee0b2529a98f486"),
     z_token_deploy_block: 48671,
+    merge_into: None,
 };
 
 const WBTC: Asset = Asset {
@@ -60,6 +64,7 @@ const WBTC: Asset = Asset {
     token_address: felt!("0x03fe2b97c1fd336e750087d68b9b867997fd64a2661ff3ca5a7c771641e8e7ac"),
     z_token_address: felt!("0x02b9ea3acdb23da566cee8e8beae3125a1458e720dea68c4a9a7a2d8eb5bbb4a"),
     z_token_deploy_block: 48673,
+    merge_into: None,
 };
 
 const USDT: Asset = Asset {
@@ -68,6 +73,7 @@ const USDT: Asset = Asset {
     token_address: felt!("0x068f5c6a61780768455de69077e07e89787839bf8166decfbf92b645209c0fb8"),
     z_token_address: felt!("0x00811d8da5dc8a2206ea7fd0b28627c2d77280a515126e62baa4d78e22714c4a"),
     z_token_deploy_block: 48674,
+    merge_into: None,
 };
 
 const DAIV0: Asset = Asset {
@@ -76,6 +82,7 @@ const DAIV0: Asset = Asset {
     token_address: felt!("0x00da114221cb83fa859dbdb4c44beeaa0bb37c7537ad5ae66fe5e0efd20e6eb3"),
     z_token_address: felt!("0x062fa7afe1ca2992f8d8015385a279f49fad36299754fb1e9866f4f052289376"),
     z_token_deploy_block: 48675,
+    merge_into: Some(TokenId::DAIV1),
 };
 
 const WSTETHV0: Asset = Asset {
@@ -84,6 +91,7 @@ const WSTETHV0: Asset = Asset {
     token_address: felt!("0x042b8f0484674ca266ac5d08e4ac6a3fe65bd3129795def2dca5c34ecc5f96d2"),
     z_token_address: felt!("0x0536aa7e01ecc0235ca3e29da7b5ad5b12cb881e29034d87a4290edbb20b7c28"),
     z_token_deploy_block: 335873,
+    merge_into: Some(TokenId::WSTETHV1),
 };
 
 const STRK: Asset = Asset {
@@ -92,6 +100,7 @@ const STRK: Asset = Asset {
     token_address: felt!("0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d"),
     z_token_address: felt!("0x06d8fa671ef84f791b7f601fa79fea8f6ceb70b5fa84189e3159d532162efc21"),
     z_token_deploy_block: 556817,
+    merge_into: None,
 };
 
 const ZEND: Asset = Asset {
@@ -100,6 +109,7 @@ const ZEND: Asset = Asset {
     token_address: felt!("0x00585c32b625999e6e5e78645ff8df7a9001cf5cf3eb6b80ccdd16cb64bd3a34"),
     z_token_address: felt!("0x02a28036ec5007c05c5611281a7d740c71a26d0305f7e9a4fa2f751d252a9f0d"),
     z_token_deploy_block: 622569,
+    merge_into: None,
 };
 
 const DAIV1: Asset = Asset {
@@ -108,6 +118,7 @@ const DAIV1: Asset = Asset {
     token_address: felt!("0x05574eb6b8789a91466f902c380d978e472db68170ff82a5b650b95a58ddf4ad"),
     z_token_address: felt!("0x04e9c97ac4bb76b743a59678432ca017fe263209a8b49e0618ecc73b9518db4a"),
     z_token_deploy_block: 637327,
+    merge_into: None,
 };
 
 const EKUBO: Asset = Asset {
@@ -116,6 +127,7 @@ const EKUBO: Asset = Asset {
     token_address: felt!("0x075afe6402ad5a5c20dd25e10ec3b3986acaa647b77e4ae24b0cbc9a54a27a87"),
     z_token_address: felt!("0x02f3add8ad0c2ab66568b5c2f315acf15636babf03f19e4dc8e3eacce43af9b2"),
     z_token_deploy_block: 671788,
+    merge_into: None,
 };
 
 const KSTRK: Asset = Asset {
@@ -124,14 +136,16 @@ const KSTRK: Asset = Asset {
     token_address: felt!("0x045cd05ee2caaac3459b87e5e2480099d201be2f62243f839f00e10dde7f500c"),
     z_token_address: felt!("0x07e475a3b2d64b97e48860bde4dad0255727c75f69aec760f90bd4d17e7f7d21"),
     z_token_deploy_block: 1015495,
+    merge_into: None,
 };
 
 const WSTETHV1: Asset = Asset {
     id: TokenId::WSTETHV1,
-    is_affected: true,
+    is_affected: false,
     token_address: felt!("0x0057912720381af14b0e5c87aa4718ed5e527eab60b3801ebf702ab09139e38b"),
     z_token_address: felt!("0x05240577d1d546f1c241b9448a97664c555e4b0d716ed2ee4c43489467f24e29"),
     z_token_deploy_block: 1140817,
+    merge_into: None,
 };
 
 const ALL_ASSETS: [Asset; 12] = [
@@ -174,8 +188,10 @@ const ATTACKER_ACCOUNTS: [Felt; 25] = [
     felt!("0x0193da87dc0b317f8418ae0c8fb3e0301698ed2d1a4047191d4641ddabc1e2bf"),
 ];
 
+const USD_SHORTFALL_THRESHOLD: Felt = felt!("100000000");
+const USD_WITHDRAWABLE_THRESHOLD: Felt = felt!("1000000");
+
 const ACCUMULATOR_SCALE: Felt = felt!("1000000000000000000000000000");
-const ACCUMULATOR_DECIMALS: u32 = 27;
 const USD_DECIMALS: u32 = 8;
 
 const EVENT_CHUNK_SIZE: u64 = 1000;
@@ -183,7 +199,7 @@ const USERS_FILE: &str = "./users.txt";
 const BALANCES_FILE: &str = "./balances.json";
 const POOL_DATA_FILE: &str = "./pools.json";
 const CLAIMS_FILE: &str = "./claims.json";
-const CLAIMS_REPORT_FILE: &str = "./claims_usd.csv";
+const PROOFS_FILE: &str = "./proofs.json";
 
 #[derive(Debug, Clone, Copy)]
 struct Asset {
@@ -192,6 +208,7 @@ struct Asset {
     token_address: Felt,
     z_token_address: Felt,
     z_token_deploy_block: u64,
+    merge_into: Option<TokenId>,
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
@@ -222,14 +239,22 @@ struct Claim {
     usd_shortfall: Felt,
 }
 
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+struct UserProfileWithProof {
+    #[serde(flatten)]
+    profile: RecoveryClaim,
+    proof: Vec<Felt>,
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize, Encode, Decode)]
+struct TokenAmount {
+    token: Felt,
+    amount: u128,
+}
+
 struct PoolResult {
     token_id: TokenId,
-    decimals: u32,
-    price: Felt,
-    is_affected: bool,
-    balance: Felt,
     claim: Felt,
-    usd_surplus: i128,
 }
 
 #[allow(clippy::upper_case_acronyms)]
@@ -259,6 +284,12 @@ enum TokenId {
     KSTRK,
     #[serde(rename = "wstethv1")]
     WSTETHV1,
+}
+
+impl Claim {
+    fn is_empty(&self) -> bool {
+        self.usd_shortfall == Felt::ZERO && self.withdrawable.is_empty()
+    }
 }
 
 impl Display for TokenId {
@@ -295,9 +326,10 @@ async fn main() -> Result<()> {
 
     let users = generate_user_list(&provider).await?;
     let user_balances = fetch_user_balances(&provider, &users).await?;
-    let pool_data = fetch_pool_data(&provider).await?;
+    let mut pool_data = fetch_pool_data(&provider).await?;
 
-    generate_claims(&user_balances, &pool_data)?;
+    let user_claims = generate_claims(&user_balances, &mut pool_data)?;
+    persist_profiles(user_claims)?;
 
     Ok(())
 }
@@ -614,8 +646,22 @@ async fn fetch_pool_data<P: Provider>(provider: P) -> Result<BTreeMap<TokenId, P
 
 fn generate_claims(
     user_balances: &BTreeMap<Felt, UserBalances>,
-    pool_data: &BTreeMap<TokenId, PoolData>,
-) -> Result<()> {
+    pool_data: &mut BTreeMap<TokenId, PoolData>,
+) -> Result<Vec<RecoveryClaim>> {
+    // Actual pool surplus/deficit liquidation & socialization results
+    pool_data.get_mut(&TokenId::ETH).unwrap().balance = felt!("121839229530853494662");
+    pool_data.get_mut(&TokenId::USDC).unwrap().balance = felt!("109310998585");
+    pool_data.get_mut(&TokenId::WBTC).unwrap().balance = felt!("120428971");
+    pool_data.get_mut(&TokenId::USDT).unwrap().balance = felt!("252747532687");
+    pool_data.get_mut(&TokenId::DAIV0).unwrap().balance = felt!("0");
+    pool_data.get_mut(&TokenId::WSTETHV0).unwrap().balance = felt!("0");
+    pool_data.get_mut(&TokenId::STRK).unwrap().balance = felt!("2767462367955102813462914");
+    pool_data.get_mut(&TokenId::ZEND).unwrap().balance = felt!("485887605379739176846415");
+    pool_data.get_mut(&TokenId::DAIV1).unwrap().balance = felt!("114533014772830070761745");
+    pool_data.get_mut(&TokenId::EKUBO).unwrap().balance = felt!("80221764933913923877338");
+    pool_data.get_mut(&TokenId::KSTRK).unwrap().balance = felt!("4033297884213356373101914");
+    pool_data.get_mut(&TokenId::WSTETHV1).unwrap().balance = felt!("22562080960516275345");
+
     debug!(
         "Generating claims for {} users on {} pools",
         user_balances.len(),
@@ -714,8 +760,7 @@ fn generate_claims(
     }
 
     let mut pool_results = vec![];
-
-    for (token_id, pool) in pool_data {
+    for (token_id, pool) in pool_data.iter() {
         let total_raw_claim = user_net_raw_supplies
             .iter()
             .flat_map(|(_, balances)| balances.get(token_id).copied())
@@ -724,134 +769,10 @@ fn generate_claims(
         let total_claim =
             (total_raw_claim * pool.lending_accumulator).floor_div(&ACCUMULATOR_SCALE.try_into()?);
 
-        let usd_surplus: i128 = if pool.balance >= total_claim {
-            ((pool.balance - total_claim) * pool.price)
-                .floor_div(&Felt::from(10u128.pow(pool.decimals)).try_into()?)
-                .try_into()?
-        } else {
-            -((total_claim - pool.balance) * pool.price)
-                .floor_div(&Felt::from(10u128.pow(pool.decimals)).try_into()?)
-                .try_into()?
-        };
-
-        let pool_affected = ALL_ASSETS
-            .iter()
-            .find(|asset| &asset.id == token_id)
-            .unwrap()
-            .is_affected;
-
         pool_results.push(PoolResult {
             token_id: *token_id,
-            decimals: pool.decimals,
-            price: pool.price,
-            is_affected: pool_affected,
-            balance: pool.balance,
             claim: total_claim,
-            usd_surplus,
         });
-    }
-
-    info!("Unaffected pools:");
-
-    for pool in pool_results.iter().filter(|pool| !pool.is_affected) {
-        info!(
-            "{}: balance = {}; claim = {} (surplus = {} USD)",
-            pool.token_id,
-            felt_to_bigdecimal(pool.balance, pool.decimals),
-            felt_to_bigdecimal(pool.claim, pool.decimals),
-            BigDecimal::new(pool.usd_surplus.into(), USD_DECIMALS as i64),
-        );
-    }
-
-    let unaffected_surplus: i128 = pool_results
-        .iter()
-        .filter_map(|pool| (!pool.is_affected).then_some(pool.usd_surplus))
-        .sum();
-    info!(
-        "Expected aggregated surplus from unaffected pools: {} USD",
-        BigDecimal::new(unaffected_surplus.into(), USD_DECIMALS as i64)
-    );
-
-    // WSTETHV1 pool is to be fully socialized
-    let wstethv1_pool = pool_results
-        .iter()
-        .find(|pool| pool.token_id == TokenId::WSTETHV1)
-        .unwrap();
-    info!(
-        "Expected surplus from {} {}: {} USD",
-        felt_to_bigdecimal(wstethv1_pool.balance, wstethv1_pool.decimals),
-        TokenId::WSTETHV1,
-        BigDecimal::new(wstethv1_pool.usd_surplus.into(), USD_DECIMALS as i64)
-    );
-
-    // TODO: once actual liquidation happens replace this with exact proceeds
-    let socialization_budget = unaffected_surplus + wstethv1_pool.usd_surplus;
-    info!(
-        "Expected surplus socialization budget: {} USD",
-        BigDecimal::new(socialization_budget.into(), USD_DECIMALS as i64)
-    );
-    assert!(socialization_budget > 0);
-
-    // This forms the basis of socialization of unaffected surplus
-    let affected_surplus: i128 = pool_results
-        .iter()
-        .filter_map(|pool| {
-            (pool.is_affected && pool.token_id != TokenId::WSTETHV1).then_some(pool.usd_surplus)
-        })
-        .sum();
-    assert!(affected_surplus < 0);
-
-    info!(
-        "Aggregated surplus from affected pools: {} USD ({} USD after socialization)",
-        BigDecimal::new(affected_surplus.into(), USD_DECIMALS as i64),
-        BigDecimal::new(
-            (affected_surplus + socialization_budget).into(),
-            USD_DECIMALS as i64
-        ),
-    );
-
-    info!("Expected affected pool recovery:");
-
-    let mut pool_socialization_amounts: BTreeMap<TokenId, Felt> = BTreeMap::new();
-    for pool in pool_results
-        .iter()
-        .filter(|pool| pool.is_affected && pool.token_id != TokenId::WSTETHV1)
-    {
-        assert!(pool.usd_surplus < 0);
-
-        let pool_socialization: i128 = (Felt::from(pool.usd_surplus.unsigned_abs())
-            * Felt::from(socialization_budget.unsigned_abs()))
-        .floor_div(&(Felt::from(affected_surplus.unsigned_abs())).try_into()?)
-        .try_into()?;
-
-        let surplus_with_socialization = pool.usd_surplus + pool_socialization;
-        let socialization_in_token_amount = (Felt::from(pool_socialization)
-            * Felt::from(10u128.pow(pool.decimals)))
-        .floor_div(&pool.price.try_into()?);
-
-        pool_socialization_amounts.insert(pool.token_id, socialization_in_token_amount);
-
-        info!(
-            "{}: balance = {}; claim = {}; surplus = {} USD; surplus w/ socialization: {} USD \
-            ({} {}) \
-            (recovery: {:.02}% -> {:.02}%)",
-            pool.token_id,
-            felt_to_bigdecimal(pool.balance, pool.decimals),
-            felt_to_bigdecimal(pool.claim, pool.decimals),
-            BigDecimal::new(pool.usd_surplus.into(), USD_DECIMALS as i64),
-            BigDecimal::new(surplus_with_socialization.into(), USD_DECIMALS as i64),
-            felt_to_bigdecimal(socialization_in_token_amount, pool.decimals),
-            pool.token_id,
-            felt_to_bigdecimal(
-                (pool.balance * ACCUMULATOR_SCALE).floor_div(&pool.claim.try_into()?),
-                ACCUMULATOR_DECIMALS - 2
-            ),
-            felt_to_bigdecimal(
-                ((pool.balance + socialization_in_token_amount) * ACCUMULATOR_SCALE)
-                    .floor_div(&pool.claim.try_into()?),
-                ACCUMULATOR_DECIMALS - 2
-            ),
-        );
     }
 
     let mut claims: BTreeMap<Felt, Claim> = BTreeMap::new();
@@ -862,10 +783,7 @@ fn generate_claims(
             usd_shortfall: Felt::ZERO,
         };
 
-        for (token_id, net_raw_supply) in net_raw_supplies
-            .iter()
-            .filter(|(token_id, _)| *token_id != &TokenId::WSTETHV1)
-        {
+        for (token_id, net_raw_supply) in &net_raw_supplies {
             let asset = ALL_ASSETS
                 .iter()
                 .find(|asset| asset.id == *token_id)
@@ -880,9 +798,8 @@ fn generate_claims(
                 .floor_div(&ACCUMULATOR_SCALE.try_into()?);
 
             if asset.is_affected {
-                let immediately_withdrawable = (scaled_net_supply
-                    * (pool.balance + pool_socialization_amounts.get(token_id).unwrap()))
-                .floor_div(&pool_result.claim.try_into()?);
+                let immediately_withdrawable =
+                    (scaled_net_supply * pool.balance).floor_div(&pool_result.claim.try_into()?);
 
                 let shortfall_in_amount = scaled_net_supply - immediately_withdrawable;
                 let shortfall_in_usd = (shortfall_in_amount * pool.price)
@@ -897,9 +814,6 @@ fn generate_claims(
                 if shortfall_in_usd != Felt::ZERO {
                     current_user_claim.usd_shortfall += shortfall_in_usd;
                 }
-
-                // NOTE: this is only the expected amount due to pending liquidation
-                // TODO: ensure the actual socialization budget is updated
             } else {
                 // Unaffected pools are guaranteed to be made whole
                 current_user_claim
@@ -939,9 +853,60 @@ fn generate_claims(
         felt_to_bigdecimal(total_claim_usd_shortfall, USD_DECIMALS),
     );
 
+    debug!("Filtering dust and merging claims");
+
     let mut user_claims = claims
         .into_iter()
-        .map(|(user, claim)| UserClaim { user, claim })
+        .map(|(user, mut claim)| {
+            // Claim merging
+
+            for asset in ALL_ASSETS {
+                if let Some(merge_target) = asset.merge_into {
+                    let from_amount = match claim.withdrawable.entry(asset.id) {
+                        Entry::Occupied(occupied_entry) => Some(occupied_entry.remove_entry().1),
+                        Entry::Vacant(_) => None,
+                    };
+
+                    if let Some(from_amount) = from_amount {
+                        match claim.withdrawable.entry(merge_target) {
+                            Entry::Vacant(entry) => {
+                                entry.insert(from_amount);
+                            }
+                            Entry::Occupied(mut entry) => {
+                                *entry.get_mut() += from_amount;
+                            }
+                        }
+                    }
+                }
+            }
+
+            (user, claim)
+        })
+        .filter_map(|(user, mut claim)| {
+            // Filter out < 1 USD shortfall claims
+            if claim.usd_shortfall < USD_SHORTFALL_THRESHOLD {
+                claim.usd_shortfall = Felt::ZERO;
+            }
+
+            // Filter out < 0.01 USD withdrawable claims
+            claim.withdrawable = claim
+                .withdrawable
+                .into_iter()
+                .filter_map(|(token_id, amount)| {
+                    let pool = pool_data.get(&token_id).unwrap();
+                    let amount_value = (amount * pool.price)
+                        .floor_div(&Felt::from(10u128.pow(pool.decimals)).try_into().unwrap());
+
+                    if amount_value < USD_WITHDRAWABLE_THRESHOLD {
+                        None
+                    } else {
+                        Some((token_id, amount))
+                    }
+                })
+                .collect();
+
+            (!claim.is_empty()).then_some(UserClaim { user, claim })
+        })
         .collect::<Vec<_>>();
     user_claims.sort_by(
         |x, y| match x.claim.usd_shortfall.cmp(&y.claim.usd_shortfall) {
@@ -950,32 +915,92 @@ fn generate_claims(
             Ordering::Greater => Ordering::Less,
         },
     );
+    info!("{} filtered claims", user_claims.len());
+    for asset in ALL_ASSETS {
+        let total_claim = user_claims
+            .iter()
+            .flat_map(|claim| claim.claim.withdrawable.get(&asset.id))
+            .fold(Felt::ZERO, |acc, e| acc + e);
+        let pool = pool_data.get(&asset.id).unwrap();
 
+        info!(
+            "Filtered claim on {}: {} {}; pool balance = {}",
+            asset.id,
+            felt_to_bigdecimal(total_claim, pool.decimals),
+            asset.id,
+            felt_to_bigdecimal(pool.balance, pool.decimals),
+        );
+    }
+
+    let total_filtered_shortfall = user_claims
+        .iter()
+        .map(|claim| claim.claim.usd_shortfall)
+        .fold(Felt::ZERO, |acc, e| acc + e);
+    info!(
+        "Filtered total shortfall: {} USD",
+        felt_to_bigdecimal(total_filtered_shortfall, USD_DECIMALS)
+    );
+
+    let mut user_profiles = vec![];
+
+    // Share calculation: normalize to sum of 1
+    for user_claim in user_claims {
+        user_profiles.push(RecoveryClaim {
+            recipient: user_claim.user,
+            share: (user_claim.claim.usd_shortfall * ACCUMULATOR_SCALE)
+                .floor_div(&total_filtered_shortfall.try_into()?)
+                .try_into()?,
+            withdrawable: user_claim
+                .claim
+                .withdrawable
+                .into_iter()
+                .map(|(token_id, amount)| TokenAmount {
+                    token: ALL_ASSETS
+                        .iter()
+                        .find(|asset| asset.id == token_id)
+                        .unwrap()
+                        .token_address,
+                    amount: amount.try_into().unwrap(),
+                })
+                .collect(),
+        });
+    }
+
+    let total_normalized_shares: u128 = user_profiles.iter().map(|profile| profile.share).sum();
+    info!("Total normalized shares: {}", total_normalized_shares);
+
+    Ok(user_profiles)
+}
+
+fn persist_profiles(user_profiles: Vec<RecoveryClaim>) -> Result<()> {
     let mut output_file = File::create(CLAIMS_FILE)?;
     let mut output_writer = BufWriter::new(&mut output_file);
 
-    serde_json::to_writer_pretty(&mut output_writer, &user_claims)?;
+    serde_json::to_writer_pretty(&mut output_writer, &user_profiles)?;
     output_writer.write_all(b"\n")?;
 
     info!("Claim list persisted to {}", CLAIMS_FILE);
 
-    let mut report_file = File::create(CLAIMS_REPORT_FILE)?;
-    let mut report_writer = BufWriter::new(&mut report_file);
+    let merkle_tree = MerkleTree::from_claims(user_profiles.iter());
+    let merkle_root = merkle_tree.root();
+    info!("Merkle root: {:#064x}", merkle_root);
 
-    writeln!(report_writer, "user,usd_shortfall")?;
-    for claim in user_claims
-        .iter()
-        .filter(|claim| claim.claim.usd_shortfall > Felt::ZERO)
-    {
-        writeln!(
-            report_writer,
-            "{:#064x},{}",
-            claim.user,
-            felt_to_bigdecimal(claim.claim.usd_shortfall, USD_DECIMALS)
-        )?;
+    let mut proofs = vec![];
+    for (ind_profile, profile) in user_profiles.into_iter().enumerate() {
+        let proof = merkle_tree.get_proof(ind_profile);
+        if !profile.verify_proof(merkle_root, &proof) {
+            panic!("Merkle proof verification failed: {}", ind_profile);
+        }
+
+        proofs.push(UserProfileWithProof { profile, proof });
     }
 
-    info!("Claim report persisted to {}", CLAIMS_REPORT_FILE);
+    let mut proofs_file = File::create(PROOFS_FILE)?;
+    let mut proofs_writer = BufWriter::new(&mut proofs_file);
+    serde_json::to_writer_pretty(&mut proofs_writer, &proofs)?;
+    proofs_writer.write_all(b"\n")?;
+
+    info!("Merkle proofs persisted to {}", PROOFS_FILE);
 
     Ok(())
 }
